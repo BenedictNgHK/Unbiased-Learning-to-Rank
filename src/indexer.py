@@ -8,43 +8,45 @@ from datasets import load_dataset
 from tqdm import tqdm
 import src.config as config
 
-def load_msmarco_data(limit=1000):
+def generate_msmarco_data(limit=None):
     """
-    Loads a subset of MS MARCO passages.
+    Generator that yields unique passages from the MS MARCO dataset.
     """
-    print(f"Loading MS MARCO dataset (streaming, limit={limit})...")
+    print(f"Loading MS MARCO dataset (streaming, limit={limit if limit else 'ALL'})...")
     try:
         # 'ms_marco' v1.1 contains 'passages'
         # Using streaming to avoid full download
         dataset = load_dataset("ms_marco", "v1.1", split="train", streaming=True)
         
-        documents = []
-        doc_ids = []
-        
+        seen_texts = set()
         count = 0
-        for item in tqdm(dataset, total=limit):
-            # Item structure: {'query_id': ..., 'query_type': ..., 'query': ..., 'passages': {'is_selected': [...], 'url': [...], 'passage_text': [...]}}
-            # This dataset seems to be Q&A. We need the corpus.
-            # Let's look for unique passages.
-            
+        
+        # Use tqdm without total if limit is None
+        pbar = tqdm(dataset, total=limit if limit else None, desc="Scanning dataset")
+        
+        for item in pbar:
             passages = item.get('passages', {})
             texts = passages.get('passage_text', [])
             
             for text in texts:
-                if count >= limit:
-                    break
-                if text not in documents: # Simple dedup for this small batch
-                    documents.append(text)
-                    doc_ids.append(f"doc_{count}")
-                    count += 1
-            if count >= limit:
-                break
+                if limit and count >= limit:
+                    pbar.close()
+                    return
                 
-        return documents, doc_ids
+                if text not in seen_texts:
+                    seen_texts.add(text)
+                    yield text
+                    count += 1
+                    
+                    if limit and count >= limit:
+                        pbar.close()
+                        return
+                        
     except Exception as e:
         print(f"Error loading MS MARCO: {e}")
         print("Falling back to dummy data.")
-        return load_dummy_data(limit)
+        for doc in load_dummy_data(limit):
+            yield doc
 
 def load_dummy_data(limit=10):
     documents = [
@@ -59,54 +61,76 @@ def load_dummy_data(limit=10):
         "Semantic search seeks to improve search accuracy by understanding the searcher's intent.",
         "Biases in data can lead to biased machine learning models."
     ]
-    return documents[:limit], [f"doc_{i}" for i in range(len(documents[:limit]))]
+    limit = limit if limit else 10
+    return documents[:limit]
 
-def build_index():
-    # 1. Load Data
-    documents, doc_ids = load_msmarco_data(limit=1000)
-    if not documents:
-        print("No documents loaded.")
-        return
-
-    # 2. Load Model
+def build_index(limit=None):
+    # 1. Prepare Model and Index
     print(f"Loading model: {config.MODEL_NAME}...")
     model = SentenceTransformer(config.MODEL_NAME)
-
-    # 3. Encode
-    print("Encoding documents...")
-    start_time = time.time()
-    embeddings = model.encode(documents, show_progress_bar=True)
-    embeddings = np.array(embeddings).astype("float32")
-    print(f"Encoding finished in {time.time() - start_time:.2f}s. Shape: {embeddings.shape}")
-
-    # 4. Build FAISS Index
-    print("Building FAISS index...")
+    
+    print("Initializing FAISS index...")
     dimension = config.EMBEDDING_DIM
-    
-    # Normalize for cosine similarity if using Inner Product, or just use L2 if the model is not normalized?
-    # all-MiniLM-L6-v2 produces normalized embeddings? Usually yes.
-    # If normalized, L2 distance is related to cosine similarity. 
-    # Or we can use faiss.IndexFlatIP for Inner Product (Cosine Similarity on normalized vectors).
-    # config.py says cosine similarity in description.
-    
-    # FAISS IndexFlatIP is for inner product. If vectors are normalized, IP == Cosine Similarity.
+    # Using Inner Product (IP) which is equivalent to Cosine Similarity for normalized vectors
     index = faiss.IndexFlatIP(dimension)
     
-    # Verify normalization
-    faiss.normalize_L2(embeddings)
-    index.add(embeddings)
+    documents = []
+    doc_ids = []
     
-    print(f"Index contains {index.ntotal} vectors.")
+    # 2. Batched Processing
+    batch_docs = []
+    
+    print("Starting Indexing Process (Batched)...")
+    start_time = time.time()
+    
+    # Use a progress bar for documents indexed if possible, but we generate them on fly
+    count_indexed = 0
+    
+    for text in generate_msmarco_data(limit):
+        batch_docs.append(text)
+        
+        if len(batch_docs) >= config.BATCH_SIZE:
+            _index_batch(model, index, batch_docs, documents, doc_ids)
+            count_indexed += len(batch_docs)
+            if count_indexed % 1000 == 0:
+                print(f"Indexed {count_indexed} documents...", end='\r')
+            batch_docs = []
+            
+    # Process remaining
+    if batch_docs:
+        _index_batch(model, index, batch_docs, documents, doc_ids)
+        count_indexed += len(batch_docs)
 
-    # 5. Save
+    print(f"\nEncoding finished in {time.time() - start_time:.2f}s.")
+    print(f"Total Index size: {index.ntotal} vectors.")
+
+    # 3. Save
     print(f"Saving index to {config.INDEX_FILE}...")
     faiss.write_index(index, config.INDEX_FILE)
     
     print(f"Saving doc_ids to {config.DOC_IDS_FILE}...")
     with open(config.DOC_IDS_FILE, "wb") as f:
+        # Depending on size, this might need optimization (e.g. chunking), but pickle is simplest for now
         pickle.dump({"documents": documents, "doc_ids": doc_ids}, f)
     
     print("Indexing complete.")
 
+def _index_batch(model, index, batch_docs, all_docs, all_ids):
+    # Encode
+    embeddings = model.encode(batch_docs, show_progress_bar=False)
+    embeddings = np.array(embeddings).astype("float32")
+    
+    # Normalize
+    faiss.normalize_L2(embeddings)
+    
+    # Add to Index
+    index.add(embeddings)
+    
+    # Update mappings
+    start_id = len(all_ids)
+    all_docs.extend(batch_docs)
+    all_ids.extend([f"doc_{start_id + i}" for i in range(len(batch_docs))])
+
 if __name__ == "__main__":
-    build_index()
+    # Default to a small limit if run directly, or use argparse in main
+    build_index(limit=1000)

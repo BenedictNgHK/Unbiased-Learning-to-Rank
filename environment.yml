@@ -1,4 +1,4 @@
-name: Unbiased_LTR
+name: ULTR
 channels:
   - defaults
   - anaconda

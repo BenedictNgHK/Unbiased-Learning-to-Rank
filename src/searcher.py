@@ -2,7 +2,7 @@ import faiss
 import pickle
 import numpy as np
 import os
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import src.config as config
 
 class SearchEngine:
@@ -11,6 +11,7 @@ class SearchEngine:
         self.documents = []
         self.doc_ids = []
         self.model = None
+        self.cross_encoder = None
         self._load_resources()
 
     def _load_resources(self):
@@ -26,10 +27,17 @@ class SearchEngine:
             self.documents = data["documents"]
             self.doc_ids = data["doc_ids"]
 
-        print(f"Loading model: {config.MODEL_NAME}...")
+        print(f"Loading Embedding model: {config.MODEL_NAME}...")
         self.model = SentenceTransformer(config.MODEL_NAME)
+        
+        print(f"Loading Cross-Encoder model: {config.CROSS_ENCODER_NAME}...")
+        self.cross_encoder = CrossEncoder(config.CROSS_ENCODER_NAME)
 
-    def search(self, query, k=5):
+    def search_vector(self, query, k=20):
+        """
+        Performs the initial retrieval using vector similarity.
+        Returns a larger pool of candidates for re-ranking.
+        """
         # Encode query
         query_vector = self.model.encode([query])
         query_vector = np.array(query_vector).astype("float32")
@@ -47,8 +55,43 @@ class SearchEngine:
                     "score": float(distances[0][i]),
                     "text": self.documents[idx]
                 })
-        
         return results
+
+    def rerank(self, query, initial_results, k=5):
+        """
+        Re-ranks the initial results using a Cross-Encoder.
+        """
+        if not initial_results:
+            return []
+            
+        # Prepare pairs [ [query, doc1], [query, doc2], ... ]
+        pairs = [[query, res['text']] for res in initial_results]
+        
+        # Predict scores
+        scores = self.cross_encoder.predict(pairs)
+        
+        # Update scores and sort
+        reranked_results = []
+        for res, score in zip(initial_results, scores):
+            res['score'] = float(score) # Update with CE score
+            reranked_results.append(res)
+            
+        # Sort by new score descending
+        reranked_results.sort(key=lambda x: x['score'], reverse=True)
+        
+        return reranked_results[:k]
+
+    def search(self, query, k=5):
+        """
+        Full pipeline: Vector Search -> Re-ranking
+        """
+        # 1. Retrieve more candidates than k (e.g., 5*k or fixed 50)
+        candidates = self.search_vector(query, k=k*4)
+        
+        # 2. Re-rank
+        final_results = self.rerank(query, candidates, k=k)
+        
+        return final_results
 
 if __name__ == "__main__":
     # Interactive testing

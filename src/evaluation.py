@@ -11,41 +11,7 @@ class Evaluator:
         """
         Calculates the SNIPS estimate of the reward (relevance) for the target ranking,
         using historical click logs from a logging policy.
-        
-        target_ranking: List of documents (strings) in the new order.
-        click_logs: List of dicts {doc_text, click, propensity, ...} from the logging policy.
-        
-        SNIPS = (Sum_i (Y_i * w_i)) / (Sum_i w_i)
-        where Y_i is the reward (click) and w_i is the importance weight.
-        w_i = pi_target(d|q) / pi_logging(d|q)
-        
-        In a deterministic ranking setting:
-        pi_target(d|q) = 1 if d is at rank k (or just present?), 0 otherwise.
-        However, standard IPS for ranking usually treats the 'action' as the list or item at k.
-        
-        Simplified Counterfactual Evaluation for Ranking (Item-level):
-        We want to estimate the number of relevant items retrieved or DCG.
-        
-        Let's assume we are estimating the "Total Clicks" we would get.
-        For each position k in Target Ranking:
-            Find the document d at target_k.
-            Look for d in the Click Logs.
-            If d appeared in logs at rank j:
-                Y = click_in_log
-                Propensity = p_j (propensity at rank j in logs)
-                Weight = 1 / p_j (since target places it at k, we assume target examines it with prob 1? 
-                          Or better, we adjust for the target position bias?
-                          
-        Standard approach for Position Bias correction (Propensity Scoring):
-        R_hat = Sum_{d in logs} (Click_d / Propensity_d) * Indicator(d in Target)
-        
-        If we want to estimate the relevance of the Target List:
-        We only sum up the inverse-propensity-weighted clicks for documents that appear in our Target List.
-        
-        SNIPS normalization:
-        Denominator = Sum_{d in logs} (1 / Propensity_d) * Indicator(d in Target)
         """
-        
         numerator = 0.0
         denominator = 0.0
         
@@ -81,20 +47,44 @@ class Evaluator:
         return snips_score
 
     @staticmethod
-    def calculate_dcg(target_ranking, click_logs):
+    def calculate_dcg(target_ranking, rel_map, k=None):
         """
-        Calculates DCG using the simulated 'true' relevance probabilities from logs if available,
-        or just using the clicks as binary relevance.
+        Calculates DCG@k given a ranking and a map of relevance scores.
         """
-        # Build a lookup for relevance
-        # In simulation, we have 'relevance_prob' which is the ground truth.
-        # We can use that to compute the 'Ideal' metric for reference.
-        doc_rel_map = {log['doc_text']: log.get('relevance_prob', 0) for log in click_logs}
-        
+        if k is None:
+            k = len(target_ranking)
+            
         dcg = 0.0
-        for i, doc in enumerate(target_ranking):
-            rel = doc_rel_map.get(doc, 0)
+        for i, doc in enumerate(target_ranking[:k]):
+            rel = rel_map.get(doc, 0.0)
             rank = i + 1
             dcg += rel / np.log2(rank + 1)
             
         return dcg
+
+    @staticmethod
+    def calculate_ndcg(target_ranking, rel_map, k=None, idcg=None):
+        """
+        Calculates nDCG@k.
+        If idcg is provided, uses it. 
+        Otherwise, calculates IDCG based on sorting the relevance scores of the target_ranking (local optimality).
+        """
+        if k is None:
+            k = len(target_ranking)
+            
+        dcg = Evaluator.calculate_dcg(target_ranking, rel_map, k)
+        
+        if idcg is None:
+            # Calculate Ideal DCG based on available documents in this ranking
+            # This measures "how well sorted is this specific list"
+            # Note: For comparing two different lists (Baseline vs Target), 
+            # you should provide a common IDCG (e.g. from the union of candidates).
+            all_rels = sorted([rel_map.get(doc, 0.0) for doc in target_ranking], reverse=True)
+            idcg = 0.0
+            for i, rel in enumerate(all_rels[:k]):
+                idcg += rel / np.log2((i + 1) + 1)
+        
+        if idcg == 0:
+            return 0.0
+            
+        return dcg / idcg

@@ -13,6 +13,19 @@ class UserSimulator:
         print(f"Loading Simulator Ground Truth Model: {ground_truth_model_name}...")
         self.ground_truth_model = CrossEncoder(ground_truth_model_name)
         
+    def get_relevance_scores(self, query, documents):
+        """
+        Returns the true relevance probabilities P(Relevant | q, d) for a list of documents.
+        """
+        if not documents:
+            return {}
+            
+        pairs = [[query, doc] for doc in documents]
+        scores = self.ground_truth_model.predict(pairs)
+        probs = 1 / (1 + np.exp(-scores))
+        
+        return {doc: float(prob) for doc, prob in zip(documents, probs)}
+
     def get_propensities(self, k, power=config.DEFAULT_POSITION_BIAS_POWER):
         """
         Returns position bias probabilities P(E=1 | r) for ranks 1..k
@@ -34,19 +47,13 @@ class UserSimulator:
         documents = documents[:k]
         
         # 1. Calculate True Relevance Probability (Attractiveness)
-        #    P(A=1 | q, d) using the CrossEncoder
-        pairs = [[query, doc] for doc in documents]
-        scores = self.ground_truth_model.predict(pairs)
-        
-        # Convert logits to probabilities using sigmoid
-        relevance_probs = 1 / (1 + np.exp(-scores))
+        rel_map = self.get_relevance_scores(query, documents)
+        relevance_probs = [rel_map[doc] for doc in documents]
         
         # 2. Calculate Examination Probability (Position Bias)
-        #    P(E=1 | r)
         propensities = self.get_propensities(len(documents))
         
         # 3. Simulate Clicks
-        #    Click = Bern(P(E) * P(A))
         click_logs = []
         
         for rank, (doc, rel_prob, prop) in enumerate(zip(documents, relevance_probs, propensities)):

@@ -5,6 +5,7 @@ from src.searcher import SearchEngine
 from src.simulation import UserSimulator
 from src.evaluation import Evaluator
 import pandas as pd
+import numpy as np
 
 def main():
     parser = argparse.ArgumentParser(description="ULTR Semantic Search System with OPE")
@@ -19,11 +20,6 @@ def main():
     if args.index or not index_exists:
         if not index_exists and not args.index:
             print("Index not found. Building index first...")
-            # Default to a smaller set if auto-triggering, unless specified? 
-            # But user asked for entire dataset capability. 
-            # If the user runs --index explicitly without limit, we do ALL.
-            # If auto-triggered, maybe safer to do ALL? 
-            # Let's stick to args.limit which defaults to None (All).
             
         print(f"Building index with limit={args.limit if args.limit is not None else 'ALL'}...")
         build_index(limit=args.limit)
@@ -77,11 +73,39 @@ def main():
             # --- Step C: OPE Evaluation ---
             print("\n[3. Evaluation] Calculating OPE Metrics (Target vs Baseline Logs)...")
             
-            snips_score = evaluator.calculate_snips(target_docs, click_logs)
-            true_dcg = evaluator.calculate_dcg(target_docs, click_logs)
+            # 1. Prepare "Ground Truth" Relevance Map for Oracle Metrics
+            # We define the pool as the union of all documents seen in Baseline and Target
+            all_seen_docs = list(set(baseline_docs + target_docs))
+            relevance_map = simulator.get_relevance_scores(query_text, all_seen_docs)
             
-            print(f"\n>>> OPE Metric (SNIPS): {snips_score:.8f}")
-            print(f">>> Oracle Metric (DCG):  {true_dcg:.8f}")
+            # Calculate Common IDCG (Ideal DCG of the best k documents from the union pool)
+            # This ensures a fair comparison between Baseline and Target
+            all_relevances = sorted(relevance_map.values(), reverse=True)
+            k_eval = 10
+            common_idcg = 0.0
+            for i, rel in enumerate(all_relevances[:k_eval]):
+                common_idcg += rel / np.log2((i + 1) + 1)
+            
+            if common_idcg == 0:
+                common_idcg = 1.0 # Avoid div by zero if all are 0
+
+            # 2. Calculate Metrics
+            target_snips = evaluator.calculate_snips(target_docs, click_logs)
+            target_ndcg = evaluator.calculate_ndcg(target_docs, relevance_map, k=k_eval, idcg=common_idcg)
+            
+            baseline_snips = evaluator.calculate_snips(baseline_docs, click_logs)
+            baseline_ndcg = evaluator.calculate_ndcg(baseline_docs, relevance_map, k=k_eval, idcg=common_idcg)
+
+            print(f"\n{'-'*20} Results {'-'*20}")
+            print(f"Metric\t\tBaseline\tTarget\t\tLift")
+            print(f"{'-'*58}")
+            
+            # Calculate Lift
+            ndcg_lift = ((target_ndcg - baseline_ndcg) / baseline_ndcg * 100) if baseline_ndcg > 0 else 0.0
+            snips_lift = ((target_snips - baseline_snips) / baseline_snips * 100) if baseline_snips > 0 else 0.0
+            
+            print(f"Oracle nDCG\t{baseline_ndcg:.4f}\t\t{target_ndcg:.4f}\t\t{ndcg_lift:+.2f}%")
+            print(f"OPE (SNIPS)\t{baseline_snips:.4f}\t\t{target_snips:.4f}\t\t{snips_lift:+.2f}%")
 
         if args.query:
             process_query(args.query)

@@ -1,23 +1,42 @@
-1. **Main Idea**:  
-   Use a pre-trained Sentence Transformer to encode both documents and queries into dense vectors, then retrieve the most semantically similar documents to a given query via cosine similarity—essentially building a minimal viable system for **semantic search**. Because this core task is lightweight, it can be extended further: wrap the model as a backend API for frontend consumption, collect user interaction logs from the frontend, and leverage those logs for bias-aware training, etc.
+# Project Description: Unbiased Learning to Rank (ULTR) System
 
-2. **Project Modules**:
+## 1. Overview
+This project implements a complete **semantic search engine** capable of simulating user behavior to evaluate Unbiased Learning to Rank (ULTR) techniques. It uses a **Sentence Transformer** (Bi-Encoder) for initial retrieval and a **Cross-Encoder** for re-ranking to mitigate position bias. The system is served via a **FastAPI** backend and accessed through a modern **React** frontend.
 
-   2.1. **Model Selection**:
-   - `sentence-transformers/all-MiniLM-L6-v2`
-   - `BAAI/bge-small-en` or `BAAI/bge-large-en-v1.5`
+## 2. Implemented Modules
 
-   2.2. **Corpus / Evaluation Datasets**:
-   - MS MARCO passages
-   - BEIR benchmark
+### 2.1. Model Architecture
+- **Retriever**: `sentence-transformers/all-MiniLM-L6-v2` (Bi-Encoder) for fast vector-based candidate generation.
+- **Re-Ranker**: `cross-encoder/ms-marco-MiniLM-L-6-v2` (Cross-Encoder) for high-precision re-ranking and acting as the "Oracle" in simulations.
 
-   2.3. **Indexing Method**:
-   - FAISS
+### 2.2. Corpus & Data
+- **Dataset**: MS MARCO Passage Ranking dataset.
+- **Handling**: Streaming implementation to handle large datasets efficiently without full download.
 
-   2.4. **Query and Retrieval**
+### 2.3. Indexing
+- **Technology**: FAISS (Facebook AI Similarity Search).
+- **Method**: `IndexFlatIP` (Inner Product) with normalized vectors for efficient Cosine Similarity search.
 
-   2.5. **Model Serving & Log Collection** *(future extension)*
+### 2.4. Query and Retrieval
+- **Pipeline**: Vector Recall (Top-K) -> Cross-Encoder Re-ranking (Top-N).
 
-   2.6. **Click Log-Based Re-ranking with Debiasing** *(future extension)*
+### 2.5. Model Serving (Backend)
+- **Framework**: FastAPI.
+- **Endpoints**: REST API handling search queries, simulation, and metric calculation.
 
-   2.7. **Offline Counterfactual Performance Estimation (OPE)** *(future extension)*
+### 2.6. Simulation & User Behavior
+- **Click Simulation**: Implements a **Position-Based Model (PBM)**.
+- **Logic**: $P(\text{Click}) = P(\text{Examine} | \text{Rank}) \times P(\text{Relevance} | \text{Content})$.
+- **Propensity**: Decays with rank (e.g., $1/\text{rank}^\gamma$).
+
+### 2.7. Evaluation (OPE)
+- **Offline Policy Evaluation**: Uses **SNIPS** (Self-Normalized Inverse Propensity Scoring) to estimate performance using biased historical logs.
+- **Oracle Metrics**: Calculates **nDCG** (Normalized Discounted Cumulative Gain) using the Cross-Encoder as ground truth to validate OPE estimates.
+
+## 3. Environment Setup
+To replicate this environment, use the provided `environment.yml`:
+
+```bash
+conda env create -f environment.yml
+conda activate ULTR
+```

@@ -33,6 +33,29 @@ class SearchEngine:
         print(f"Loading Cross-Encoder model: {config.CROSS_ENCODER_NAME}...")
         self.cross_encoder = CrossEncoder(config.CROSS_ENCODER_NAME)
 
+    def get_document_by_id(self, doc_id):
+        """
+        Retrieves a document's text by its ID.
+        Optimized for "doc_{index}" format.
+        """
+        try:
+            # Extract index from "doc_123"
+            if doc_id.startswith("doc_"):
+                idx = int(doc_id.split("_")[1])
+                if 0 <= idx < len(self.documents):
+                    # Verify ID match (optional, but good for safety)
+                    # if self.doc_ids[idx] == doc_id: 
+                    return self.documents[idx]
+        except Exception:
+            pass
+            
+        # Fallback: Linear search (slow, but safe)
+        try:
+            idx = self.doc_ids.index(doc_id)
+            return self.documents[idx]
+        except ValueError:
+            return None
+
     def search_vector(self, query, k=20):
         """
         Performs the initial retrieval using vector similarity.

@@ -44,6 +44,21 @@ class SearchResponse(BaseModel):
     metrics: dict
     simulation_logs: list
 
+class DocumentResponse(BaseModel):
+    doc_id: str
+    text: str
+
+@app.get("/api/document/{doc_id}", response_model=DocumentResponse)
+async def get_document(doc_id: str):
+    if not search_engine:
+        raise HTTPException(status_code=503, detail="System not ready")
+    
+    text = search_engine.get_document_by_id(doc_id)
+    if not text:
+        raise HTTPException(status_code=404, detail="Document not found")
+        
+    return {"doc_id": doc_id, "text": text}
+
 @app.post("/api/search", response_model=SearchResponse)
 async def search(request: SearchQuery):
     if not search_engine:

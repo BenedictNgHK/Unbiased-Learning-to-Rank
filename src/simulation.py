@@ -4,69 +4,64 @@ import src.config as config
 
 class UserSimulator:
     """
-    Simulates user clicks based on a Position-Based Model (PBM).
-    P(Click = 1 | u, d, r) = P(Examine = 1 | r) * P(Relevant = 1 | u, d)
+    负责：
+    - 计算 position bias（propensity）
+    - 通过 Oracle Cross-Encoder 估计相关性概率（作为点击倾向）
+    - 按 seed 生成可复现的点击日志
     """
-    def __init__(self, ground_truth_model_name=config.CROSS_ENCODER_NAME):
-        # We use a Cross-Encoder as the "Oracle" / "Ground Truth" for relevance
-        # In a real scenario, this would be unknown or latent.
-        print(f"Loading Simulator Ground Truth Model: {ground_truth_model_name}...")
-        self.ground_truth_model = CrossEncoder(ground_truth_model_name)
-        
-    def get_relevance_scores(self, query, documents):
+    def __init__(self):
+        self.oracle_name = getattr(config, "ORACLE_ENCODER_NAME", "cross-encoder/ms-marco-MiniLM-L-12-v2")
+        self.max_len_ce = getattr(config, "MAX_LEN_CE", 256)
+        # 作为“真值打分器”（仅用于离线评估/模拟）
+        self.oracle = CrossEncoder(self.oracle_name, max_length=self.max_len_ce)
+
+    def get_propensities(self, k: int):
         """
-        Returns the true relevance probabilities P(Relevant | q, d) for a list of documents.
+        位置曝光概率：P(examine@rank=r) = 1/sqrt(r)
+        """
+        ranks = np.arange(1, k + 1, dtype=float)
+        return 1.0 / np.sqrt(ranks)
+
+    def get_relevance_scores(self, query: str, documents):
+        """
+        用 Oracle CE 得到相关性得分 -> Sigmoid 概率（0~1）
+        返回: {doc_text: prob}
         """
         if not documents:
             return {}
-            
-        pairs = [[query, doc] for doc in documents]
-        scores = self.ground_truth_model.predict(pairs)
-        probs = 1 / (1 + np.exp(-scores))
-        
-        return {doc: float(prob) for doc, prob in zip(documents, probs)}
+        pairs = [[query, d] for d in documents]
+        scores = np.array(self.oracle.predict(pairs), dtype=float)
+        probs = 1.0 / (1.0 + np.exp(-scores))  # Sigmoid 到 [0,1]
+        return {doc: float(p) for doc, p in zip(documents, probs)}
 
-    def get_propensities(self, k, power=config.DEFAULT_POSITION_BIAS_POWER):
+    def simulate_clicks(self, query: str, documents, k: int = None, seed: int = None):
         """
-        Returns position bias probabilities P(E=1 | r) for ranks 1..k
-        Simple decay model: 1 / (rank + 1)^power
-        """
-        ranks = np.arange(1, k + 1)
-        # Use a slightly milder decay than 1/r to make it interesting
-        propensities = 1.0 / np.power(ranks, power)
-        return propensities
-
-    def simulate_clicks(self, query, documents, k=None):
-        """
-        Simulates clicks for a given query and a list of documents.
-        Returns a list of dictionaries containing click information.
+        生成点击日志（可选固定 seed 以复现实验）：
+        P(click) = P(examine@rank) * P(relevance)
         """
         if k is None:
             k = len(documents)
-        
-        documents = documents[:k]
-        
-        # 1. Calculate True Relevance Probability (Attractiveness)
+        documents = list(documents)[:k]
+
+        rng = np.random.default_rng(seed) if seed is not None else None
+
         rel_map = self.get_relevance_scores(query, documents)
-        relevance_probs = [rel_map[doc] for doc in documents]
-        
-        # 2. Calculate Examination Probability (Position Bias)
+        relevance_probs = [rel_map[d] for d in documents]
         propensities = self.get_propensities(len(documents))
-        
-        # 3. Simulate Clicks
-        click_logs = []
-        
-        for rank, (doc, rel_prob, prop) in enumerate(zip(documents, relevance_probs, propensities)):
-            click_prob = rel_prob * prop
-            is_clicked = np.random.rand() < click_prob
-            
-            click_logs.append({
+
+        logs = []
+        for rank, (doc, rel, prop) in enumerate(zip(documents, relevance_probs, propensities), start=1):
+            click_prob = float(rel * prop)
+            if rng is not None:
+                clicked = rng.random() < click_prob
+            else:
+                clicked = np.random.rand() < click_prob
+            logs.append({
                 "query": query,
                 "doc_text": doc,
-                "rank": rank + 1,
-                "relevance_prob": float(rel_prob),
+                "rank": rank,
+                "relevance_prob": float(rel),
                 "propensity": float(prop),
-                "click": 1 if is_clicked else 0
+                "click": 1 if clicked else 0
             })
-            
-        return click_logs
+        return logs

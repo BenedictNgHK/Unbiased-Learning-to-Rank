@@ -39,7 +39,7 @@ def load_resources():
     except Exception as e:
         print(f"Error loading resources: {e}")
 
-# ------- 请求/响应模型（把可选扩展字段也列上，避免被过滤） -------
+# ------- 请求/响应模型 -------
 class SearchQuery(BaseModel):
     query: str
     use_ultr: Optional[bool] = False
@@ -84,19 +84,24 @@ async def search(request: SearchQuery):
     seed = request.seed
     ts = int(time.time())
 
-    # 可复现实验：设置随机种子（影响模拟点击）
+    # 可复现实验：设置随机种子（影响 torch/np 的其他路径）
     if seed is not None:
         try:
             random.seed(seed)
             np.random.seed(seed)
             torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            if hasattr(torch.backends, "cudnn"):
+                torch.backends.cudnn.benchmark = False
+                torch.backends.cudnn.deterministic = True
         except Exception:
             pass
 
-    # 1) Baseline：向量检索 + 用 baseline 排序生成点击日志
+    # 1) Baseline：向量检索 + 用 baseline 排序生成点击日志（把 seed 传进去）
     baseline_results = search_engine.search_vector(query_text, k=10)
     baseline_docs = [r['text'] for r in baseline_results]
-    click_logs = simulator.simulate_clicks(query_text, baseline_docs)
+    click_logs = simulator.simulate_clicks(query_text, baseline_docs, seed=seed)
 
     formatted_logs = [{
         "rank": log["rank"],
@@ -114,23 +119,20 @@ async def search(request: SearchQuery):
     ce_docs   = [r['text'] for r in ce_results]
     ultr_docs = [r['text'] for r in ultr_results]
 
-    # 3) 相关性与公共 IDCG（用于 nDCG 的同一归一化）
-    all_seen_docs = list(set(baseline_docs + ce_docs + ultr_docs))
+    # 3) 相关性与公共 IDCG（使用“有序并集”，避免 set 顺序不稳定）
+    all_seen_docs = list(dict.fromkeys(baseline_docs + ce_docs + ultr_docs))
     relevance_map = simulator.get_relevance_scores(query_text, all_seen_docs)
     all_rels = sorted(relevance_map.values(), reverse=True)
     k_eval = 10
     common_idcg = sum(rel / np.log2((i + 1) + 1) for i, rel in enumerate(all_rels[:k_eval])) or 1.0
 
     # 4) 计算三套指标
-    # baseline（以向量检索顺序作为排名）
     base_ndcg  = Evaluator.calculate_ndcg(baseline_docs, relevance_map, k=k_eval, idcg=common_idcg)
     base_snips = Evaluator.calculate_snips(baseline_docs, click_logs)
 
-    # CE
     ce_ndcg  = Evaluator.calculate_ndcg(ce_docs,  relevance_map, k=k_eval, idcg=common_idcg)
     ce_snips = Evaluator.calculate_snips(ce_docs, click_logs)
 
-    # ULTR
     ultr_ndcg  = Evaluator.calculate_ndcg(ultr_docs, relevance_map, k=k_eval, idcg=common_idcg)
     ultr_snips = Evaluator.calculate_snips(ultr_docs, click_logs)
 
@@ -139,14 +141,12 @@ async def search(request: SearchQuery):
 
     metrics = {
         "baseline": {"ndcg": float(base_ndcg), "snips": float(base_snips)},
-        # “target” 按你的按钮返回对应一套，保持旧前端兼容
         "target":   {"ndcg": float(ultr_ndcg if use_ultr else ce_ndcg),
                      "snips": float(ultr_snips if use_ultr else ce_snips)},
         "lift":     {"ndcg": pct_lift(ultr_ndcg if use_ultr else ce_ndcg, base_ndcg),
                      "snips": pct_lift(ultr_snips if use_ultr else ce_snips, base_snips)}
     }
 
-    # 额外返回两套指标与三种 lift
     metrics_ce   = {"ndcg": float(ce_ndcg),   "snips": float(ce_snips)}
     metrics_ultr = {"ndcg": float(ultr_ndcg), "snips": float(ultr_snips)}
     lift_ce_vs_base   = {"ndcg": pct_lift(ce_ndcg,   base_ndcg),
@@ -156,10 +156,7 @@ async def search(request: SearchQuery):
     lift_ultr_vs_ce   = {"ndcg": pct_lift(ultr_ndcg,   ce_ndcg),
                          "snips": pct_lift(ultr_snips, ce_snips)}
 
-    # 选择返回结果（按钮控制谁是结果区）
     final_results = ultr_results if use_ultr else ce_results
-
-    # 是否有 ULTR 模型（用于前端角标展示）
     ultr_available = bool(search_engine.ultr_model is not None)
 
     return {

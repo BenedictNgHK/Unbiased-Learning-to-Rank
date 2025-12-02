@@ -1,5 +1,202 @@
 what is position bias
-semantic search vs keyword search
-inverse propensity scoring
-learning to rank cross encoder
-offline policy evaluation
+define position bias in search
+position bias vs presentation bias
+how to reduce position bias in click logs
+what is inverse propensity scoring
+snips estimator explanation
+ctr vs conversion rate difference
+what is click model
+cascade model vs pbm
+what is examination hypothesis
+learning to rank definition
+pairwise vs listwise ranking
+pointwise ranking pros and cons
+what is ndcg metric
+map vs ndcg difference
+precision vs recall difference
+what is dcg in ir
+how to compute idcg
+biased click logs correction
+counterfactual evaluation tutorial
+off-policy evaluation in ranking
+what is doubly robust estimator
+ips vs dr estimator comparison
+what is propensity score
+how to estimate propensities
+randomized interleaving test
+team draft interleaving explanation
+what is a/b test in search
+offline vs online evaluation
+what is click debiasing
+unbiased learning to rank overview
+what is slate recommendation
+position-aware attention meaning
+what is exposure bias in recsys
+trust region policy optimization basics
+what is bandit algorithm
+epsilon greedy vs ucb
+thompson sampling explained
+contextual bandits for ranking
+what is exploration vs exploitation
+what is cold start problem
+how to handle cold start users
+feature engineering for ranking
+what is query intent
+navigational vs informational query
+transactional query examples
+query reformulation techniques
+what is query expansion
+bm25 vs tf-idf difference
+what is bm25 formula
+vector search vs lexical search
+what is dense retrieval
+dual encoder vs cross encoder
+bi-encoder vs cross-encoder tradeoffs
+late interaction colbert idea
+reranking pipeline steps
+what is knowledge distillation
+teacher student model in nlp
+what is kv cache in llms
+kv cache memory optimizations
+paged attention explanation
+speculative decoding overview
+quantization int8 vs int4
+per-channel vs per-token quantization
+pruning methods for transformers
+what is sparsity in attention
+flash attention concept
+rope vs absolute position embedding
+relative positional encoding benefits
+what is rotary position embedding
+transformer encoder vs decoder
+self attention explained simply
+multi head attention purpose
+layer normalization vs batch normalization
+residual connection purpose
+dropout in neural networks
+vanishing gradient problem
+activation function relu vs gelu
+softmax temperature meaning
+logits vs probabilities
+cross entropy loss definition
+hinge loss vs cross entropy
+pairwise margin loss explanation
+learning rate warmup reason
+adam vs adamw optimizer
+weight decay purpose
+gradient clipping why use
+early stopping criteria
+train validation test split
+k fold cross validation
+data leakage examples
+overfitting vs underfitting
+how to tune hyperparameters
+grid search vs bayesian optimization
+seed reproducibility importance
+random seed how to set
+python list vs tuple difference
+python generator vs iterator
+what is virtual environment
+conda vs venv difference
+pip install from requirements
+what is docker container
+docker image vs container
+compose vs dockerfile difference
+kubernetes basics for beginners
+pod vs deployment difference
+service vs ingress difference
+what is microservice architecture
+rest vs graphql difference
+http get vs post difference
+idempotent http methods
+status code 200 vs 201
+what is cors policy
+same origin policy explained
+jwt vs session authentication
+oauth2 authorization code flow
+password hashing best practices
+salting vs peppering passwords
+sql vs nosql databases
+what is normalization in sql
+primary key vs foreign key
+inner join vs left join
+index in database purpose
+b tree vs hash index
+acid vs base properties in db
+isolation levels explained
+deadlock in databases
+eventual consistency meaning
+cap theorem summary
+message queue vs stream
+kafka vs rabbitmq difference
+what is exactly once semantics
+batch vs streaming processing
+etl vs elt difference
+spark vs flink comparison
+mapreduce basics
+hdfs vs s3 difference
+parquet vs csv vs json
+columnar storage benefits
+vectorization in numpy
+pandas groupby tutorial
+merge vs join in pandas
+matplotlib vs seaborn difference
+how to read csv in pandas
+how to handle missing values
+standardization vs normalization
+train test leakage prevention
+what is p value
+t test vs z test
+confidence interval meaning
+bayes theorem simple example
+prior vs posterior difference
+maximum likelihood estimation
+bias vs variance tradeoff
+regularization l1 vs l2
+ridge vs lasso difference
+logistic regression interpretation
+decision tree overfitting control
+random forest vs gradient boosting
+xgboost vs lightgbm difference
+catboost categorical handling
+kmeans vs hierarchical clustering
+silhouette score meaning
+pca vs t sne difference
+umap vs tsne difference
+cosine similarity vs euclidean
+jaccard similarity definition
+edit distance explanation
+what is trie data structure
+hash map vs tree map
+stack vs queue difference
+dfs vs bfs difference
+dijkstra vs a star
+dynamic programming idea
+time complexity big o
+space complexity examples
+cpu vs gpu difference
+cuda basics for beginners
+fp16 vs bf16 vs fp32
+throughput vs latency difference
+cache locality meaning
+io bound vs cpu bound
+thread vs process difference
+async io vs multithreading
+unix signals basics
+ssh public key authentication
+git rebase vs merge difference
+git stash usage
+semantic commit messages guide
+continuous integration basics
+unit test vs integration test
+test coverage meaning
+linting vs formatting tools
+what is pep8
+typescript vs javascript difference
+react state vs props
+react useEffect basics
+debounce vs throttle difference
+csrf vs xss difference
+symmetric vs asymmetric encryption
+hashing vs encryption difference
+tls handshake overview

@@ -1,87 +1,69 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional
+import time, random
+import numpy as np
+import torch
+
 from src.searcher import SearchEngine
 from src.simulation import UserSimulator
 from src.evaluation import Evaluator
-import numpy as np
-import random
-import time
+import src.config as config
 
 app = FastAPI()
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # dev 环境放开；上线请收紧
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- globals ----------
-search_engine: Optional[SearchEngine] = None
-simulator: Optional[UserSimulator] = None
-evaluator: Optional[Evaluator] = None
+# 全局实例
+search_engine = None
+simulator = None
+evaluator = None
 
 @app.on_event("startup")
 def load_resources():
     global search_engine, simulator, evaluator
     print("Loading resources...")
-    search_engine = SearchEngine()
-    simulator = UserSimulator()
-    evaluator = Evaluator()
-    print("Resources loaded successfully.")
+    try:
+        search_engine = SearchEngine()  # 默认不强制 ULTR，按请求切换
+        simulator = UserSimulator()
+        evaluator = Evaluator()
+        print("Resources loaded successfully.")
+    except Exception as e:
+        print(f"Error loading resources: {e}")
 
-# ---------- models ----------
+# ------- 请求/响应模型（把可选扩展字段也列上，避免被过滤） -------
 class SearchQuery(BaseModel):
     query: str
     use_ultr: Optional[bool] = False
     seed: Optional[int] = None
 
 class SearchResponse(BaseModel):
-    results: List[Dict[str, Any]]
-    metrics: Dict[str, Any]
-    simulation_logs: List[Dict[str, Any]]
-    used_ultr: bool
+    results: list
+    metrics: dict
+    simulation_logs: list
+    used_ultr: Optional[bool] = None
     seed: Optional[int] = None
-    ts: float
-    # 新增对比字段（前端可选用）
-    metrics_ce: Optional[Dict[str, float]] = None
-    metrics_ultr: Optional[Dict[str, float]] = None
-    lift_ce_vs_base: Optional[Dict[str, float]] = None
-    lift_ultr_vs_base: Optional[Dict[str, float]] = None
-    lift_ultr_vs_ce: Optional[Dict[str, float]] = None
+    ts: int
     ultr_available: Optional[bool] = None
+    metrics_ce: Optional[dict] = None
+    metrics_ultr: Optional[dict] = None
+    lift_ce_vs_base: Optional[dict] = None
+    lift_ultr_vs_base: Optional[dict] = None
+    lift_ultr_vs_ce: Optional[dict] = None
 
 class DocumentResponse(BaseModel):
     doc_id: str
     text: str
 
-# ---------- utils ----------
-def _calc_idcg(sorted_rels: List[float], k: int) -> float:
-    idcg = sum(rel / np.log2(i + 2) for i, rel in enumerate(sorted_rels[:k]))
-    return idcg or 1.0
-
-def _pack_metrics(docs: List[str],
-                  relevance_map: Dict[str, float],
-                  click_logs: List[Dict[str, Any]],
-                  k: int,
-                  idcg: float) -> Dict[str, float]:
-    ndcg = evaluator.calculate_ndcg(docs, relevance_map, k=k, idcg=idcg)
-    snips = evaluator.calculate_snips(docs, click_logs)
-    return {"ndcg": float(ndcg), "snips": float(snips)}
-
-def _lift(a: float, b: float) -> float:
-    # (a - b)/b*100, b==0 时返回 0
-    return float(((a - b) / b * 100.0) if b > 0 else 0.0)
-
-# ---------- health ----------
-@app.get("/health")
-def health():
-    return {"ok": True, "ts": time.time()}
-
-# ---------- document ----------
+# -------------------- 文档接口 --------------------
 @app.get("/api/document/{doc_id}", response_model=DocumentResponse)
 async def get_document(doc_id: str):
     if not search_engine:
@@ -91,22 +73,27 @@ async def get_document(doc_id: str):
         raise HTTPException(status_code=404, detail="Document not found")
     return {"doc_id": doc_id, "text": text}
 
-# ---------- search ----------
+# -------------------- 搜索接口 --------------------
 @app.post("/api/search", response_model=SearchResponse)
 async def search(request: SearchQuery):
-    if not (search_engine and simulator and evaluator):
+    if not search_engine:
         raise HTTPException(status_code=503, detail="System not ready")
 
     query_text = request.query
     use_ultr = bool(request.use_ultr)
     seed = request.seed
+    ts = int(time.time())
 
-    # 固定随机性（点击日志、打分中的随机）
+    # 可复现实验：设置随机种子（影响模拟点击）
     if seed is not None:
-        np.random.seed(seed)
-        random.seed(seed)
+        try:
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+        except Exception:
+            pass
 
-    # 1) Baseline：仅向量检索 + 用户点击日志（用于 OPE/SNIPS）
+    # 1) Baseline：向量检索 + 用 baseline 排序生成点击日志
     baseline_results = search_engine.search_vector(query_text, k=10)
     baseline_docs = [r['text'] for r in baseline_results]
     click_logs = simulator.simulate_clicks(query_text, baseline_docs)
@@ -119,69 +106,76 @@ async def search(request: SearchQuery):
         "doc_text": (log["doc_text"][:50] + "...") if log["doc_text"] else ""
     } for log in click_logs]
 
-    # 2) 生成候选，分别给 CE 与 ULTR 重排（同一批候选，便于公平对比）
-    candidates = search_engine.search_vector(query_text, k=20)
-    results_ce   = search_engine.rerank(query_text, candidates, k=10, use_ultr=False)
-    results_ultr = search_engine.rerank(query_text, candidates, k=10, use_ultr=True)
+    # 2) 统一候选集；分别做 CE 与 ULTR 两套重排
+    candidates = search_engine.search_vector(query_text, k=40)
+    ce_results   = search_engine.rerank(query_text, candidates, k=10, use_ultr=False)
+    ultr_results = search_engine.rerank(query_text, candidates, k=10, use_ultr=True)
 
-    docs_ce   = [r['text'] for r in results_ce]
-    docs_ultr = [r['text'] for r in results_ultr]
+    ce_docs   = [r['text'] for r in ce_results]
+    ultr_docs = [r['text'] for r in ultr_results]
 
-    # 3) 统一真值与 IDCG（公平对比）
-    all_seen_docs = list(set(baseline_docs + docs_ce + docs_ultr))
+    # 3) 相关性与公共 IDCG（用于 nDCG 的同一归一化）
+    all_seen_docs = list(set(baseline_docs + ce_docs + ultr_docs))
     relevance_map = simulator.get_relevance_scores(query_text, all_seen_docs)
     all_rels = sorted(relevance_map.values(), reverse=True)
     k_eval = 10
-    idcg = _calc_idcg(all_rels, k_eval)
+    common_idcg = sum(rel / np.log2((i + 1) + 1) for i, rel in enumerate(all_rels[:k_eval])) or 1.0
 
-    # 4) 三套指标
-    m_base = _pack_metrics(baseline_docs, relevance_map, click_logs, k_eval, idcg)
-    m_ce   = _pack_metrics(docs_ce,       relevance_map, click_logs, k_eval, idcg)
-    m_ultr = _pack_metrics(docs_ultr,     relevance_map, click_logs, k_eval, idcg)
+    # 4) 计算三套指标
+    # baseline（以向量检索顺序作为排名）
+    base_ndcg  = Evaluator.calculate_ndcg(baseline_docs, relevance_map, k=k_eval, idcg=common_idcg)
+    base_snips = Evaluator.calculate_snips(baseline_docs, click_logs)
 
-    # 5) 三种 Lift
-    lift_ce_vs_base = {
-        "ndcg": _lift(m_ce["ndcg"], m_base["ndcg"]),
-        "snips": _lift(m_ce["snips"], m_base["snips"])
-    }
-    lift_ultr_vs_base = {
-        "ndcg": _lift(m_ultr["ndcg"], m_base["ndcg"]),
-        "snips": _lift(m_ultr["snips"], m_base["snips"])
-    }
-    lift_ultr_vs_ce = {
-        "ndcg": _lift(m_ultr["ndcg"], m_ce["ndcg"]),
-        "snips": _lift(m_ultr["snips"], m_ce["snips"])
-    }
+    # CE
+    ce_ndcg  = Evaluator.calculate_ndcg(ce_docs,  relevance_map, k=k_eval, idcg=common_idcg)
+    ce_snips = Evaluator.calculate_snips(ce_docs, click_logs)
 
-    # 向后兼容：根据 use_ultr 返回旧的 metrics/target
-    chosen_results = results_ultr if use_ultr else results_ce
-    chosen_docs    = docs_ultr    if use_ultr else docs_ce
-    chosen_metrics = _pack_metrics(chosen_docs, relevance_map, click_logs, k_eval, idcg)
-    chosen_lift = {
-        "ndcg": _lift(chosen_metrics["ndcg"], m_base["ndcg"]),
-        "snips": _lift(chosen_metrics["snips"], m_base["snips"])
-    }
-    metrics_legacy = {
-        "baseline": m_base,
-        "target":   chosen_metrics,
-        "lift":     chosen_lift
+    # ULTR
+    ultr_ndcg  = Evaluator.calculate_ndcg(ultr_docs, relevance_map, k=k_eval, idcg=common_idcg)
+    ultr_snips = Evaluator.calculate_snips(ultr_docs, click_logs)
+
+    def pct_lift(a, b):
+        return float(((a - b) / b * 100) if b > 0 else 0.0)
+
+    metrics = {
+        "baseline": {"ndcg": float(base_ndcg), "snips": float(base_snips)},
+        # “target” 按你的按钮返回对应一套，保持旧前端兼容
+        "target":   {"ndcg": float(ultr_ndcg if use_ultr else ce_ndcg),
+                     "snips": float(ultr_snips if use_ultr else ce_snips)},
+        "lift":     {"ndcg": pct_lift(ultr_ndcg if use_ultr else ce_ndcg, base_ndcg),
+                     "snips": pct_lift(ultr_snips if use_ultr else ce_snips, base_snips)}
     }
 
-    resp = SearchResponse(
-        results=chosen_results,
-        metrics=metrics_legacy,           # 兼容旧前端
-        simulation_logs=formatted_logs,
-        used_ultr=use_ultr,
-        seed=seed,
-        ts=time.time(),
-        metrics_ce=m_ce,
-        metrics_ultr=m_ultr,
-        lift_ce_vs_base=lift_ce_vs_base,
-        lift_ultr_vs_base=lift_ultr_vs_base,
-        lift_ultr_vs_ce=lift_ultr_vs_ce,
-        ultr_available=bool(search_engine.ultr_model is not None),
-    )
-    return resp
+    # 额外返回两套指标与三种 lift
+    metrics_ce   = {"ndcg": float(ce_ndcg),   "snips": float(ce_snips)}
+    metrics_ultr = {"ndcg": float(ultr_ndcg), "snips": float(ultr_snips)}
+    lift_ce_vs_base   = {"ndcg": pct_lift(ce_ndcg,   base_ndcg),
+                         "snips": pct_lift(ce_snips, base_snips)}
+    lift_ultr_vs_base = {"ndcg": pct_lift(ultr_ndcg,   base_ndcg),
+                         "snips": pct_lift(ultr_snips, base_snips)}
+    lift_ultr_vs_ce   = {"ndcg": pct_lift(ultr_ndcg,   ce_ndcg),
+                         "snips": pct_lift(ultr_snips, ce_snips)}
+
+    # 选择返回结果（按钮控制谁是结果区）
+    final_results = ultr_results if use_ultr else ce_results
+
+    # 是否有 ULTR 模型（用于前端角标展示）
+    ultr_available = bool(search_engine.ultr_model is not None)
+
+    return {
+        "results": final_results,
+        "metrics": metrics,
+        "simulation_logs": formatted_logs,
+        "used_ultr": use_ultr,
+        "seed": seed,
+        "ts": ts,
+        "ultr_available": ultr_available,
+        "metrics_ce": metrics_ce,
+        "metrics_ultr": metrics_ultr,
+        "lift_ce_vs_base": lift_ce_vs_base,
+        "lift_ultr_vs_base": lift_ultr_vs_base,
+        "lift_ultr_vs_ce": lift_ultr_vs_ce
+    }
 
 if __name__ == "__main__":
     import uvicorn
